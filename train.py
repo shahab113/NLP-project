@@ -1,229 +1,244 @@
 """
-train.py — LoRA Fine-tuning Script
+train.py — Dolly LoRA Fine-tuning
 ===================================
-Fine-tunes LLaMA-7B with LoRA on a chosen instruction dataset
-(Dolly, Alpaca, or OpenAssistant).
+Converted from: lama7b-tuning-newdata.ipynb
+Authors: Shahab Ahmad, Inam Ul Hassan, Ejaz Ulhaq
+Course : NLP — MS AI, FAST NUCES Islamabad
 
 Usage:
-    python train.py --config config.yaml
-    python train.py --config config.yaml --dataset alpaca
+    python train.py
+    python train.py --epochs 1
+    python train.py --dataset alpaca
 """
 
-import argparse
 import os
-import yaml
+import random
+import argparse
+import numpy as np
+import pandas as pd
 import torch
-from datasets import load_dataset
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    TrainingArguments,
-    Trainer,
-    DataCollatorForSeq2Seq,
-)
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTTrainer
+from datasets import Dataset, load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model
+from trl import SFTTrainer, SFTConfig
 
 
-# ──────────────────────────────────────────────
-# Argument Parsing
-# ──────────────────────────────────────────────
 def parse_args():
-    parser = argparse.ArgumentParser(description="LoRA Fine-tuning for LLM Calibration")
-    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config YAML")
-    parser.add_argument("--dataset", type=str, default=None,
-                        help="Override dataset: dolly | alpaca | openassistant")
-    parser.add_argument("--epochs", type=int, default=None, help="Override number of epochs")
-    parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, default="/kaggle/input/models/metaresearch/llama-2/pytorch/7b-hf/1")
+    parser.add_argument("--data_path",  type=str, default="/kaggle/working/datasets")
+    parser.add_argument("--ckpt_path",  type=str, default="/kaggle/working/checkpoints")
+    parser.add_argument("--dataset",    type=str, default="dolly", choices=["dolly", "alpaca", "oa"])
+    parser.add_argument("--epochs",     type=int, default=3)
+    parser.add_argument("--seed",       type=int, default=42)
     return parser.parse_args()
 
 
-# ──────────────────────────────────────────────
-# Config Loader
-# ──────────────────────────────────────────────
-def load_config(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    print(f"Seed set to {seed}")
 
 
-# ──────────────────────────────────────────────
-# Dataset Formatters
-# ──────────────────────────────────────────────
-SYSTEM_PROMPT = "You are a helpful assistant."
-
-def format_dolly(example: dict) -> dict:
-    instruction = example.get("instruction", "")
-    context = example.get("context", "")
-    response = example.get("response", "")
-    if context:
-        text = (
-            f"### System:\n{SYSTEM_PROMPT}\n\n"
-            f"### Instruction:\n{instruction}\n\n"
-            f"### Input:\n{context}\n\n"
-            f"### Response:\n{response}"
-        )
+def load_dolly(data_path, seed):
+    dolly_path = f"{data_path}/dolly/dolly_data.csv"
+    if os.path.exists(dolly_path):
+        print(f"Loading Dolly from cache: {dolly_path}")
+        dolly_df = pd.read_csv(dolly_path)
     else:
-        text = (
-            f"### System:\n{SYSTEM_PROMPT}\n\n"
-            f"### Instruction:\n{instruction}\n\n"
-            f"### Response:\n{response}"
-        )
-    return {"text": text}
+        print("Downloading Dolly from HuggingFace...")
+        os.makedirs(f"{data_path}/dolly", exist_ok=True)
+        dolly_raw = load_dataset("databricks/databricks-dolly-15k", split="train")
+
+        def format_dolly(example):
+            if example.get("context") and example["context"].strip():
+                text = (
+                    f"### Instruction:\n{example['instruction']}\n"
+                    f"### Input:\n{example['context']}\n"
+                    f"### Response:\n{example['response']}"
+                )
+            else:
+                text = (
+                    f"### Instruction:\n{example['instruction']}\n"
+                    f"### Response:\n{example['response']}"
+                )
+            return {"text": text}
+
+        dolly_formatted = dolly_raw.map(format_dolly)
+        dolly_df = pd.DataFrame({
+            "text":        dolly_formatted["text"],
+            "instruction": dolly_formatted["instruction"],
+            "context":     dolly_formatted["context"],
+            "response":    dolly_formatted["response"],
+            "category":    dolly_formatted["category"],
+        })
+        dolly_df.to_csv(dolly_path, index=False)
+        print(f"Dolly saved: {len(dolly_df)} samples")
+        print(dolly_df["category"].value_counts())
+
+    print(f"Dolly loaded: {len(dolly_df)} samples")
+    return Dataset.from_pandas(dolly_df[["text"]])
 
 
-def format_alpaca(example: dict) -> dict:
-    instruction = example.get("instruction", "")
-    input_text = example.get("input", "")
-    output = example.get("output", "")
-    if input_text:
-        text = (
-            f"### System:\n{SYSTEM_PROMPT}\n\n"
-            f"### Instruction:\n{instruction}\n\n"
-            f"### Input:\n{input_text}\n\n"
-            f"### Response:\n{output}"
-        )
+def load_alpaca(data_path, seed):
+    alpaca_path = f"{data_path}/alpaca/alpaca_sampled.csv"
+    if os.path.exists(alpaca_path):
+        print(f"Loading Alpaca from cache: {alpaca_path}")
+        alpaca_df = pd.read_csv(alpaca_path)
     else:
-        text = (
-            f"### System:\n{SYSTEM_PROMPT}\n\n"
-            f"### Instruction:\n{instruction}\n\n"
-            f"### Response:\n{output}"
-        )
-    return {"text": text}
+        print("Downloading Alpaca from HuggingFace...")
+        os.makedirs(f"{data_path}/alpaca", exist_ok=True)
+        alpaca_raw = load_dataset("tatsu-lab/alpaca", split="train")
+
+        def format_alpaca(example):
+            if example["input"] and example["input"].strip():
+                text = (
+                    f"### Instruction:\n{example['instruction']}\n"
+                    f"### Input:\n{example['input']}\n"
+                    f"### Response:\n{example['output']}"
+                )
+            else:
+                text = (
+                    f"### Instruction:\n{example['instruction']}\n"
+                    f"### Response:\n{example['output']}"
+                )
+            return {"text": text}
+
+        alpaca_formatted = alpaca_raw.map(format_alpaca)
+        alpaca_df = pd.DataFrame({
+            "text":        alpaca_formatted["text"],
+            "instruction": alpaca_formatted["instruction"],
+            "input":       alpaca_formatted["input"],
+            "output":      alpaca_formatted["output"],
+        })
+        alpaca_df = alpaca_df.sample(n=min(11000, len(alpaca_df)), random_state=seed).reset_index(drop=True)
+        alpaca_df.to_csv(alpaca_path, index=False)
+        print(f"Alpaca saved: {len(alpaca_df)} samples")
+
+    print(f"Alpaca loaded: {len(alpaca_df)} samples")
+    return Dataset.from_pandas(alpaca_df[["text"]])
 
 
-def format_oa(example: dict) -> dict:
-    role = example.get("role", "")
-    text_body = example.get("text", "")
-    # Extract single-turn English conversations
-    if role == "prompter":
-        return {"text": None}  # skip prompter-only entries
-    instruction = example.get("parent_id", "")
-    text = (
-        f"### System:\n{SYSTEM_PROMPT}\n\n"
-        f"### Instruction:\n{instruction}\n\n"
-        f"### Response:\n{text_body}"
-    )
-    return {"text": text}
+def load_oa(data_path, seed):
+    oa_path = f"{data_path}/oa/oa_data.csv"
+    if os.path.exists(oa_path):
+        print(f"Loading OA from cache: {oa_path}")
+        oa_df = pd.read_csv(oa_path)
+    else:
+        print("Downloading OpenAssistant from HuggingFace...")
+        os.makedirs(f"{data_path}/oa", exist_ok=True)
+        oa_raw = load_dataset("OpenAssistant/oasst1", split="train")
+        oa_samples = []
+        for example in oa_raw:
+            if (example.get("lang") == "en" and
+                    example.get("role") == "prompter" and
+                    example.get("text")):
+                text = (
+                    f"### Instruction:\n{example['text']}\n"
+                    f"### Response:\n"
+                )
+                oa_samples.append({
+                    "text":       text,
+                    "raw_text":   example["text"],
+                    "message_id": example.get("message_id", ""),
+                })
+        oa_df = pd.DataFrame(oa_samples)
+        oa_df = oa_df.sample(n=min(11000, len(oa_df)), random_state=seed).reset_index(drop=True)
+        oa_df.to_csv(oa_path, index=False)
+        print(f"OA saved: {len(oa_df)} samples")
+
+    print(f"OA loaded: {len(oa_df)} samples")
+    return Dataset.from_pandas(oa_df[["text"]])
 
 
-DATASET_CONFIG = {
-    "dolly": {
-        "hf_path": "databricks/databricks-dolly-15k",
-        "split": "train",
-        "formatter": format_dolly,
-    },
-    "alpaca": {
-        "hf_path": "tatsu-lab/alpaca",
-        "split": "train",
-        "formatter": format_alpaca,
-    },
-    "openassistant": {
-        "hf_path": "OpenAssistant/oasst1",
-        "split": "train",
-        "formatter": format_oa,
-    },
+DATASET_LOADERS = {
+    "dolly":  load_dolly,
+    "alpaca": load_alpaca,
+    "oa":     load_oa,
 }
 
 
-# ──────────────────────────────────────────────
-# Model & LoRA Setup
-# ──────────────────────────────────────────────
-def load_model_and_tokenizer(cfg: dict):
-    model_name = cfg["model"]["base_model"]
-    print(f"[INFO] Loading base model: {model_name}")
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+def load_model_and_tokenizer(model_path):
+    print(f"Loading LLaMA-7B from: {model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
-
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        model_path,
         torch_dtype=torch.float16,
         device_map="auto",
     )
-    model.config.use_cache = False
-
-    lora_cfg = cfg["lora"]
     lora_config = LoraConfig(
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["lora_alpha"],
-        lora_dropout=lora_cfg["lora_dropout"],
-        target_modules=lora_cfg["target_modules"],
-        bias=lora_cfg["bias"],
-        task_type=TaskType.CAUSAL_LM,
+        r=8,
+        lora_alpha=32,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.1,
+        bias="none",
+        task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
-
+    print("Model + LoRA ready.")
     return model, tokenizer
 
 
-# ──────────────────────────────────────────────
-# Main Training Loop
-# ──────────────────────────────────────────────
-def main():
-    args = parse_args()
-    cfg = load_config(args.config)
-
-    # CLI overrides
-    dataset_key = args.dataset or cfg["training"].get("dataset", "dolly").split("/")[-1]
-    if dataset_key == "databricks-dolly-15k":
-        dataset_key = "dolly"
-    num_epochs = args.epochs or cfg["training"]["num_epochs"]
-    output_dir = args.output_dir or cfg["training"]["output_dir"]
-    output_dir = os.path.join(output_dir, f"{dataset_key}_lora")
-
-    print(f"[INFO] Dataset  : {dataset_key}")
-    print(f"[INFO] Epochs   : {num_epochs}")
-    print(f"[INFO] Output   : {output_dir}")
-
-    # Load dataset
-    ds_cfg = DATASET_CONFIG[dataset_key]
-    print(f"[INFO] Loading dataset from HuggingFace: {ds_cfg['hf_path']}")
-    raw_dataset = load_dataset(ds_cfg["hf_path"], split=ds_cfg["split"])
-    dataset = raw_dataset.map(ds_cfg["formatter"], remove_columns=raw_dataset.column_names)
-    dataset = dataset.filter(lambda x: x["text"] is not None)
-    dataset = dataset.shuffle(seed=cfg["training"]["seed"])
-    print(f"[INFO] Dataset size: {len(dataset)} examples")
-
-    # Load model
-    model, tokenizer = load_model_and_tokenizer(cfg)
-
-    # Training arguments
-    train_cfg = cfg["training"]
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=num_epochs,
-        per_device_train_batch_size=train_cfg["per_device_train_batch_size"],
-        gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
-        learning_rate=train_cfg["learning_rate"],
-        warmup_steps=train_cfg["warmup_steps"],
-        lr_scheduler_type=train_cfg["lr_scheduler_type"],
-        fp16=train_cfg["fp16"],
-        gradient_checkpointing=train_cfg["gradient_checkpointing"],
-        save_strategy=train_cfg["save_strategy"],
-        logging_steps=train_cfg["logging_steps"],
+def train_one_epoch(model, tokenizer, dataset, ckpt_path, dataset_name, epoch):
+    training_args = SFTConfig(
+        output_dir=f"{ckpt_path}/{dataset_name}_lora",
+        num_train_epochs=1,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=8,
+        learning_rate=3e-4,
+        warmup_steps=100,
+        lr_scheduler_type="linear",
+        fp16=True,
+        logging_steps=50,
+        save_strategy="epoch",
+        save_total_limit=3,
         report_to="none",
-        seed=train_cfg["seed"],
+        dataloader_num_workers=2,
+        dataset_text_field="text",
+        max_seq_length=2048,
     )
-
-    # SFT Trainer
     trainer = SFTTrainer(
         model=model,
-        args=training_args,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=train_cfg["max_seq_length"],
-        tokenizer=tokenizer,
+        args=training_args,
     )
-
-    print("[INFO] Starting training...")
+    print(f"\nStarting {dataset_name} LoRA training — Epoch {epoch}...")
     trainer.train()
+    print(f"Epoch {epoch} complete.")
+    save_path = f"{ckpt_path}/{dataset_name}_lora_epoch{epoch}"
+    model.save_pretrained(save_path)
+    tokenizer.save_pretrained(save_path)
+    print(f"Epoch {epoch} saved to: {save_path}")
+    return model
 
-    print(f"[INFO] Saving final model to {output_dir}/final")
-    trainer.model.save_pretrained(os.path.join(output_dir, "final"))
-    tokenizer.save_pretrained(os.path.join(output_dir, "final"))
-    print("[INFO] Training complete.")
+
+def main():
+    args = parse_args()
+    set_seed(args.seed)
+
+    print(f"\nCUDA available : {torch.cuda.is_available()}")
+    print(f"GPU count      : {torch.cuda.device_count()}")
+    for i in range(torch.cuda.device_count()):
+        mem = torch.cuda.get_device_properties(i).total_memory / 1e9
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)} | {mem:.1f} GB")
+
+    os.makedirs(args.data_path, exist_ok=True)
+    os.makedirs(args.ckpt_path, exist_ok=True)
+
+    dataset = DATASET_LOADERS[args.dataset](args.data_path, args.seed)
+    model, tokenizer = load_model_and_tokenizer(args.model_path)
+
+    for epoch in range(1, args.epochs + 1):
+        model = train_one_epoch(model, tokenizer, dataset, args.ckpt_path, args.dataset, epoch)
+
+    final_path = f"{args.ckpt_path}/{args.dataset}_lora_final"
+    model.save_pretrained(final_path)
+    tokenizer.save_pretrained(final_path)
+    print(f"\nFinal model saved to: {final_path}")
+    print("Training complete.")
 
 
 if __name__ == "__main__":
