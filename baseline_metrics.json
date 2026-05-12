@@ -1,0 +1,93 @@
+{
+  "description": "Baseline and reproduced instruction-tuned results from Assignment 2 & 3",
+  "base_paper": "Zhu et al. (2023) - On the Calibration of Large Language Models and Alignment",
+
+  "pretraining_results": {
+    "description": "Pythia models evaluated on CLM, Facts, MMLU at final checkpoint (step 143000)",
+    "models": [
+      {
+        "model": "Pythia-70M",
+        "params_M": 70.4,
+        "clm":   { "ece": 0.0070, "acc": 0.4228 },
+        "facts": { "ece": 0.0953, "acc": 0.0000 },
+        "mmlu":  { "ece": 0.3301, "acc": 0.2642 }
+      },
+      {
+        "model": "Pythia-160M",
+        "params_M": 162.3,
+        "clm":   { "ece": 0.0053, "acc": 0.4727 },
+        "facts": { "ece": 0.0923, "acc": 0.0001 },
+        "mmlu":  { "ece": 0.2591, "acc": 0.2557 }
+      },
+      {
+        "model": "Pythia-410M",
+        "params_M": 405.3,
+        "clm":   { "ece": 0.0037, "acc": 0.5209 },
+        "facts": { "ece": 0.0828, "acc": 0.0119 },
+        "mmlu":  { "ece": 0.2286, "acc": 0.2636 }
+      },
+      {
+        "model": "Pythia-1B",
+        "params_M": 1011.8,
+        "clm":   { "ece": 0.0041, "acc": 0.5400 },
+        "facts": { "ece": 0.0852, "acc": 0.0164 },
+        "mmlu":  { "ece": 0.0825, "acc": 0.2476 }
+      }
+    ]
+  },
+
+  "training_dynamics": {
+    "description": "Pythia-1B calibration at different training steps",
+    "model": "Pythia-1B",
+    "checkpoints": [
+      { "step": 256,    "clm_ece": 0.0774, "facts_ece": 0.1452, "mmlu_ece": 0.5690 },
+      { "step": 512,    "clm_ece": 0.0498, "facts_ece": 0.1117, "mmlu_ece": 0.4730 },
+      { "step": 1000,   "clm_ece": 0.0656, "facts_ece": 0.0489, "mmlu_ece": 0.3230 },
+      { "step": 4000,   "clm_ece": 0.0473, "facts_ece": 0.0658, "mmlu_ece": 0.2400 },
+      { "step": 16000,  "clm_ece": 0.0456, "facts_ece": 0.0687, "mmlu_ece": 0.2440 },
+      { "step": 64000,  "clm_ece": 0.0457, "facts_ece": 0.0580, "mmlu_ece": 0.2110 },
+      { "step": 143000, "clm_ece": 0.0420, "facts_ece": 0.0482, "mmlu_ece": 0.1210 }
+    ]
+  },
+
+  "alignment_results": {
+    "description": "LLaMA-7B + LoRA alignment stage results",
+    "models": [
+      {
+        "model": "Baseline (LLaMA-7B)",
+        "epoch": null,
+        "clm":   { "ece": 0.0092, "acc": 0.6140 },
+        "facts": { "ece": 0.0602, "acc": 0.1288 },
+        "mmlu":  { "ece": 0.0497, "acc": 0.4460 }
+      },
+      {
+        "model": "Alpaca LoRA",
+        "epoch": 1,
+        "clm":   { "ece": 0.0286, "acc": 0.6018 },
+        "facts": { "ece": 0.2300, "acc": 0.0314 },
+        "mmlu":  { "ece": 0.0717, "acc": 0.4450 }
+      },
+      {
+        "model": "Alpaca LoRA",
+        "epoch": 2,
+        "clm":   { "ece": 0.0322, "acc": 0.6030 },
+        "facts": { "ece": 0.2327, "acc": 0.0458 },
+        "mmlu":  { "ece": 0.0970, "acc": 0.4557 }
+      },
+      {
+        "model": "Alpaca LoRA",
+        "epoch": 3,
+        "clm":   { "ece": 0.0856, "acc": 0.5079 },
+        "facts": { "ece": 0.2323, "acc": 0.0462 },
+        "mmlu":  { "ece": null,   "acc": null, "note": "Extraction bug — no valid answers" }
+      },
+      {
+        "model": "OA LoRA",
+        "epoch": 3,
+        "clm":   { "ece": 0.0262, "acc": 0.5880 },
+        "facts": { "ece": 0.0813, "acc": 0.0974 },
+        "mmlu":  { "ece": 0.0705, "acc": 0.4310 }
+      }
+    ]
+  }
+}

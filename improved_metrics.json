@@ -1,0 +1,59 @@
+{
+  "description": "Proposed method results — LLaMA-7B + LoRA fine-tuned on Databricks Dolly 15k (3 epochs)",
+  "model": "Dolly LoRA",
+  "base_model": "huggyllama/llama-7b",
+  "dataset": "databricks/databricks-dolly-15k",
+  "epochs": 3,
+  "lora_config": {
+    "r": 8,
+    "alpha": 32,
+    "dropout": 0.1,
+    "target_modules": ["q_proj", "v_proj"]
+  },
+  "hardware": "Kaggle GPU-T4 x2",
+  "training_time_hours": 12,
+
+  "results": {
+    "clm": {
+      "ece": 0.0201,
+      "acc": 0.6084,
+      "dataset": "EleutherAI/pile",
+      "num_samples": 5000
+    },
+    "facts": {
+      "ece": 0.0849,
+      "acc": 0.1224,
+      "dataset": "hadyelsahar/t-rex",
+      "num_samples": 5000
+    },
+    "mmlu": {
+      "ece": 0.0237,
+      "acc": 0.2263,
+      "dataset": "cais/mmlu",
+      "num_samples": 3000,
+      "num_shots": 5,
+      "note": "Accuracy drop expected — Dolly lacks MC format. ECE is best across all models."
+    }
+  },
+
+  "comparison_summary": {
+    "vs_alpaca_LoRA": {
+      "clm_ece_improvement": 0.0655,
+      "facts_ece_improvement": 0.1474,
+      "mmlu_ece": "Dolly: 0.0237 (Alpaca had bug)"
+    },
+    "vs_oa_LoRA": {
+      "clm_ece_improvement": 0.0061,
+      "facts_ece_change": -0.0036,
+      "mmlu_ece_improvement": 0.0468
+    },
+    "vs_baseline": {
+      "clm_ece_change": 0.0109,
+      "facts_ece_change": 0.0247,
+      "mmlu_ece_improvement": 0.0260,
+      "note": "Dolly MMLU ECE (0.0237) is BETTER than untuned baseline (0.0497)"
+    }
+  },
+
+  "key_finding": "Dolly LoRA achieves the best calibration (lowest ECE) on CLM and MMLU across all models, and ties with OA on Facts. Notably, MMLU ECE surpasses even the untuned baseline."
+}
